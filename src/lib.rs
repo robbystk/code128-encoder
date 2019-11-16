@@ -1,4 +1,5 @@
 use std::iter::Peekable;
+use std::fmt::{Debug,Display,Formatter};
 
 /// Encodes a string into a payload for use in ZPL for a code128 barcode
 pub fn encode(s: String) -> String {
@@ -60,12 +61,12 @@ impl<S> Iterator for Tokenizer<S>
         match self.source.peek() {
             Some(b) => Some({
                 let t = match b {
-                    b'0'..=b'9' => Token::Digits(chunk(&mut self.source, is_digit)),
-                    b' '..=b'' => Token::Chars(chunk(&mut self.source, is_letter_or_symbol)),
-                    0..=31 => Token::Controls(chunk(&mut self.source, is_ctrl)),
+                    b'0'..=b'9' => Token::Digits(convert_vec(chunk(&mut self.source, is_digit))),
+                    b' '..=b'' => Token::Chars(convert_vec(chunk(&mut self.source, is_letter_or_symbol))),
+                    0..=31 => Token::Controls(convert_vec(chunk(&mut self.source, is_ctrl))),
                     128..=255 => panic!("Illegal character {}", b),
                 };
-                println!("parsed token: {:?}", t);
+                println!("parsed token: {}", t);
                 t
             }),
             None => None,
@@ -73,11 +74,57 @@ impl<S> Iterator for Tokenizer<S>
     }
 }
 
+#[derive(Clone, PartialEq)]
+pub struct StrChar(u8);
+
+impl StrChar {
+    fn to_char(&self) -> char {
+        self.0 as char
+    }
+}
+
+impl Display for StrChar {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
+        write!(f, "{}", self.to_char())
+    }
+}
+
+impl Debug for StrChar {
+    fn fmt(&self, f: &mut Formatter) -> Result<(), std::fmt::Error> {
+        if is_ctrl(&self.0) {
+            write!(f, "({})", self.0)
+        } else {
+            write!(f, "{}", self.to_char())
+        }
+    }
+}
+
+fn convert_vec(v: Vec<u8>) -> Vec<StrChar> {
+    v.iter().map(|c| StrChar(*c)).collect()
+}
+
 #[derive(Debug, PartialEq)]
 pub enum Token {
-    Chars(Vec<u8>),
-    Digits(Vec<u8>),
-    Controls(Vec<u8>),
+    Chars(Vec<StrChar>),
+    Digits(Vec<StrChar>),
+    Controls(Vec<StrChar>),
+}
+
+impl Display for Token {
+    fn fmt(&self, f: &mut Formatter) -> Result<(),std::fmt::Error> {
+        use Token::*;
+
+        let variant = match self {
+            Chars(_) => "Chars",
+            Digits(_) => "Digits",
+            Controls(_) => "Controls"
+        };
+        let internal = match self {
+            Chars(b) | Digits(b) | Controls(b) => b,
+        };
+        f.write_str(variant)?;
+        f.debug_list().entries(internal.iter()).finish()
+    }
 }
 
 fn encode_tokens<I>(tokens: I) -> String
@@ -153,8 +200,8 @@ where
                 if c.len() >= 4 {
                     let len = c.len();
                     if len % 2 != 0 {
-                        payload.push(c[0] as char);
-                        println!("adding {} to payload", c[0] as char);
+                        payload.push(c[0].to_char());
+                        println!("adding {:?} to payload", c[0]);
                         c = c[1..len].to_vec();
                     }
                     if len >= 6 {
@@ -186,7 +233,7 @@ where
                         c.iter().for_each(|b| {
                             // switch to code B for single character
                             payload.push_str(">7");
-                            payload.push(*b as char);
+                            payload.push(b.to_char());
                         });
                         A
                     }
@@ -203,7 +250,7 @@ where
             },
             Some(Controls(c)) => match prev_code {
                 A => {
-                    c.iter().for_each(|b| payload.push_str(format!("{}", *b).as_str()));
+                    c.iter().for_each(|b| payload.push(b.to_char()));
                     A
                 },
                 B => {
@@ -233,10 +280,10 @@ where
 
 pub enum Code { A, B, C }
 
-fn push_bytes(s: &mut String, bytes: Vec<u8>) {
+fn push_bytes(s: &mut String, bytes: Vec<StrChar>) {
     bytes.iter().for_each(|c| {
-        s.push(*c as char);
-        println!("adding {} to payload", *c as char);
+        s.push(c.to_char());
+        println!("adding {:?} to payload", c);
     });
 }
 
@@ -248,15 +295,21 @@ mod tests {
     fn test_can_tokenize_a_string() {
         let s = "ABC123".bytes();
         let tokens: Vec<_> = Tokenizer::initialize(s).collect();
-        assert_eq!(tokens[0], Token::Chars(b"ABC".to_vec()));
-        assert_eq!(tokens[1], Token::Digits(b"123".to_vec()));
+        assert_eq!(tokens[0], Token::Chars(b"ABC".iter().map(|c| StrChar(*c)).collect()));
+        assert_eq!(tokens[1], Token::Digits(b"123".iter().map(|c| StrChar(*c)).collect()));
     }
 
     #[test]
     fn test_can_encode_a_string_of_tokens() {
         let tokens = vec!(
-            Token::Digits(b"1234".to_vec())
+            Token::Digits(b"1234".iter().map(|c| StrChar(*c)).collect())
         );
         assert_eq!(">;1234", encode_tokens(tokens).as_str());
+    }
+
+    #[test]
+    fn test_token_can_be_displayed() {
+        let token = Token::Digits(b"1234".iter().map(|c| StrChar(*c)).collect());
+        assert_eq!("Digits([1, 2, 3, 4])", format!("{:?}", token));
     }
 }
